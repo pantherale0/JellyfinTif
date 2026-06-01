@@ -10,7 +10,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
@@ -46,7 +45,7 @@ class TifPlayerFactory
                     .setExtensionRendererMode(extensionMode)
                     .setMediaCodecSelector(TV_INPUT_MEDIA_CODEC_SELECTOR)
             val mediaSourceFactory =
-                DefaultMediaSourceFactory(
+                TifMediaSourceFactory(
                     OkHttpDataSource.Factory(authOkHttpClient),
                     extractorsFactory,
                 )

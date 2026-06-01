@@ -73,6 +73,7 @@ class JellyfinTvSession(
     private var timeshiftWindow: LiveTvTimeshiftWindow? = null
     private var playbackAnchorUtcMs: Long = 0L
     private val seekMutex = Mutex()
+    private var playbackRetryCount = 0
 
     init {
         setOverlayViewEnabled(true)
@@ -180,6 +181,7 @@ class JellyfinTvSession(
         contentAllowedNotified = false
         videoAvailableNotified = false
         firstFrameRendered = false
+        playbackRetryCount = 0
         tuneStartedAtMs = System.currentTimeMillis()
         currentLiveStream = null
         timeshiftWindow = null
@@ -229,80 +231,7 @@ class JellyfinTvSession(
                 )
                 updateTimeshiftWindow(stream)
                 withContext(Dispatchers.Main) {
-                    val exoPlayer =
-                        playerFactory.createTvInputPlayer().also {
-                            it.addListener(
-                                object : Player.Listener {
-                                    override fun onPlayerError(error: PlaybackException) {
-                                        Timber.e(error, "TIF playback error")
-                                        hideBufferingOverlay()
-                                        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
-                                    }
-
-                                    override fun onIsLoadingChanged(isLoading: Boolean) {
-                                        if (isLoading) {
-                                            notifyBuffering()
-                                        } else {
-                                            maybeMarkVideoAvailable()
-                                        }
-                                    }
-
-                                    override fun onPlaybackStateChanged(playbackState: Int) {
-                                        when (playbackState) {
-                                            Player.STATE_BUFFERING -> notifyBuffering()
-                                            Player.STATE_READY -> {
-                                                attachVideoSurface(player, force = true)
-                                                maybeMarkVideoAvailable()
-                                            }
-                                            Player.STATE_ENDED -> {
-                                                hideBufferingOverlay()
-                                                notifyVideoUnavailable(
-                                                    TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN,
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    override fun onTracksChanged(tracks: Tracks) {
-                                        publishTifTrackInfo(tracks)
-                                    }
-
-                                    override fun onRenderedFirstFrame() {
-                                        if (firstFrameRendered) return
-                                        firstFrameRendered = true
-                                        attachVideoSurface(
-                                            player,
-                                            force = true,
-                                            allowBeforeReady = true,
-                                        )
-                                        maybeMarkVideoAvailable()
-                                    }
-                                },
-                            )
-                            player = it
-                        }
-                    attachVideoSurface(exoPlayer, force = true, allowBeforeReady = true)
-                    val mediaItem =
-                        MediaItem
-                            .Builder()
-                            .setUri(stream.url.toUri())
-                            .apply {
-                                stream.mimeType?.let { setMimeType(it) }
-                            }.build()
-                    exoPlayer.setMediaItem(mediaItem)
-                    playbackAnchorUtcMs = System.currentTimeMillis()
-                    exoPlayer.prepare()
-                    exoPlayer.playWhenReady = true
-                    notifyTimeShiftStatusChanged(
-                        if (timeshiftWindow?.isAvailable == true) {
-                            TvInputManager.TIME_SHIFT_STATUS_AVAILABLE
-                        } else {
-                            TvInputManager.TIME_SHIFT_STATUS_UNAVAILABLE
-                        },
-                    )
-                    sessionScope.launchIO {
-                        reportPlaybackStarted(channelId)
-                    }
+                    startChannelPlayback(channelId, stream, reportStart = true)
                 }
             }
         return true
@@ -374,6 +303,141 @@ class JellyfinTvSession(
         exoPlayer?.setVideoSurface(surface)
     }
 
+
+    private fun createPlaybackListener(): Player.Listener =
+        object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                handlePlaybackError(error)
+            }
+
+            override fun onIsLoadingChanged(isLoading: Boolean) {
+                if (isLoading) {
+                    notifyBuffering()
+                } else {
+                    maybeMarkVideoAvailable()
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_BUFFERING -> notifyBuffering()
+                    Player.STATE_READY -> {
+                        attachVideoSurface(player, force = true)
+                        maybeMarkVideoAvailable()
+                    }
+                    Player.STATE_ENDED -> {
+                        hideBufferingOverlay()
+                        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                    }
+                }
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                publishTifTrackInfo(tracks)
+            }
+
+            override fun onRenderedFirstFrame() {
+                if (firstFrameRendered) return
+                firstFrameRendered = true
+                attachVideoSurface(
+                    player,
+                    force = true,
+                    allowBeforeReady = true,
+                )
+                maybeMarkVideoAvailable()
+            }
+        }
+
+    private fun buildMediaItem(stream: LiveTvStream): MediaItem =
+        MediaItem
+            .Builder()
+            .setUri(stream.url.toUri())
+            .apply {
+                stream.mimeType?.let { setMimeType(it) }
+            }.build()
+
+    private fun startChannelPlayback(
+        channelId: UUID,
+        stream: LiveTvStream,
+        reportStart: Boolean,
+    ) {
+        val exoPlayer = player ?: playerFactory.createTvInputPlayer().also { created ->
+            created.addListener(createPlaybackListener())
+            player = created
+        }
+        attachVideoSurface(exoPlayer, force = true, allowBeforeReady = true)
+        exoPlayer.setMediaItem(buildMediaItem(stream))
+        playbackAnchorUtcMs = System.currentTimeMillis()
+        exoPlayer.prepare()
+        exoPlayer.playWhenReady = true
+        notifyTimeShiftStatusChanged(
+            if (timeshiftWindow?.isAvailable == true) {
+                TvInputManager.TIME_SHIFT_STATUS_AVAILABLE
+            } else {
+                TvInputManager.TIME_SHIFT_STATUS_UNAVAILABLE
+            },
+        )
+        if (reportStart) {
+            sessionScope.launchIO {
+                reportPlaybackStarted(channelId)
+            }
+        }
+    }
+
+    private fun handlePlaybackError(error: PlaybackException) {
+        if (isRecoverableHlsError(error) && playbackRetryCount < MAX_PLAYBACK_RETRIES) {
+            playbackRetryCount++
+            ConnectionLog.playback(
+                "recoverable playback error (${error.cause?.javaClass?.simpleName}), retry $playbackRetryCount/$MAX_PLAYBACK_RETRIES",
+            )
+            notifyBuffering()
+            val channelId = currentChannelId ?: return
+            sessionScope.launchIO {
+                val stream =
+                    streamHelper.getChannelStream(
+                        channelId = channelId,
+                        liveStreamId = null,
+                        mediaSourceId = null,
+                    )
+                if (stream == null) {
+                    ConnectionLog.playback("playback retry failed: could not resolve stream")
+                    withContext(Dispatchers.Main) {
+                        hideBufferingOverlay()
+                        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                    }
+                    return@launchIO
+                }
+                currentLiveStream = stream
+                withContext(Dispatchers.Main) {
+                    firstFrameRendered = false
+                    videoAvailableNotified = false
+                    startChannelPlayback(channelId, stream, reportStart = false)
+                }
+            }
+            return
+        }
+        Timber.e(error, "TIF playback error")
+        hideBufferingOverlay()
+        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+    }
+
+    private fun isRecoverableHlsError(error: PlaybackException): Boolean {
+        var cause: Throwable? = error.cause
+        while (cause != null) {
+            when (cause.javaClass.simpleName) {
+                "PlaylistStuckException",
+                "PlaylistResetException",
+                "BehindLiveWindowException" -> return true
+            }
+            cause = cause.cause
+        }
+        return false
+    }
+
+    private companion object {
+        private const val MAX_PLAYBACK_RETRIES = 2
+    }
+
     private fun showBufferingOverlay() {
         bufferingOverlayVisible = true
         bufferingOverlay?.visibility = View.VISIBLE
@@ -411,6 +475,7 @@ class JellyfinTvSession(
             applySurfaceLayout(hostSurfaceWidth, hostSurfaceHeight, force = true)
         }
         videoAvailableNotified = true
+        playbackRetryCount = 0
         notifyVideoAvailable()
     }
 
