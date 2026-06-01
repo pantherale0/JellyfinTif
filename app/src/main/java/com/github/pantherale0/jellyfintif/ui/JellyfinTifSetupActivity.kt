@@ -82,7 +82,7 @@ class JellyfinTifSetupActivity : ComponentActivity() {
                     onConnect = viewModel::connectToServer,
                     onCancelQuickConnect = viewModel::cancelQuickConnect,
                     onRetry = viewModel::resetToServerEntry,
-                    enqueueSync = { epgSyncScheduler.enqueueSync() },
+                    enqueueSync = { epgSyncScheduler.enqueueSync() }
                     observeWork = { workId -> observeSyncWork(workId) },
                 )
             }
@@ -117,7 +117,7 @@ private fun TifSetupScreen(
     onConnect: (String) -> Unit,
     onCancelQuickConnect: () -> Unit,
     onRetry: () -> Unit,
-    enqueueSync: () -> UUID?,
+    enqueueSync: suspend () -> UUID?,
     observeWork: (UUID) -> Unit,
 ) {
     var syncStarted by remember { mutableStateOf(false) }

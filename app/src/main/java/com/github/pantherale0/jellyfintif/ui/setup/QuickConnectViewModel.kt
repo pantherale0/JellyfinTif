@@ -4,13 +4,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.pantherale0.jellyfintif.data.SessionRepository
 import com.github.pantherale0.jellyfintif.util.ConnectionLog
+import com.github.pantherale0.jellyfintif.util.launchIO
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import org.jellyfin.sdk.Jellyfin
 import org.jellyfin.sdk.api.client.extensions.quickConnectApi
 import org.jellyfin.sdk.api.client.extensions.userApi
@@ -47,7 +47,7 @@ class QuickConnectViewModel
         private var quickConnectJob: Job? = null
 
         fun connectToServer(inputUrl: String) {
-            viewModelScope.launch {
+            viewModelScope.launchIO {
                 ConnectionLog.setup("connectToServer: input=$inputUrl")
                 _state.value = SetupScreenState.EnterServerUrl
                 try {
@@ -69,7 +69,7 @@ class QuickConnectViewModel
                             SetupScreenState.Error(
                                 "Could not connect to server. Check the URL and try again.",
                             )
-                        return@launch
+                        return@launchIO
                     }
                     val serverUrl = bestServer.address
                     val id = serverInfo.id?.toUUIDOrNull()
@@ -77,7 +77,7 @@ class QuickConnectViewModel
                         ConnectionLog.discoveryRejected(inputUrl, "server id missing or invalid")
                         _state.value =
                             SetupScreenState.Error("Server returned an invalid response.")
-                        return@launch
+                        return@launchIO
                     }
                     if (serverInfo.startupWizardCompleted != true) {
                         ConnectionLog.discoveryRejected(
@@ -86,7 +86,7 @@ class QuickConnectViewModel
                         )
                         _state.value =
                             SetupScreenState.Error("Server returned an invalid response.")
-                        return@launch
+                        return@launchIO
                     }
                     ConnectionLog.setup(
                         "selected server url=$serverUrl id=$id name=${serverInfo.serverName} version=${serverInfo.version}",
@@ -105,7 +105,7 @@ class QuickConnectViewModel
         private fun startQuickConnect(serverUrl: String) {
             quickConnectJob?.cancel()
             quickConnectJob =
-                viewModelScope.launch {
+                viewModelScope.launchIO {
                     try {
                         ConnectionLog.quickConnect(serverUrl, "creating API client")
                         val api = jellyfin.createApi(serverUrl)
@@ -128,7 +128,7 @@ class QuickConnectViewModel
                                 SetupScreenState.Error(
                                     "Quick Connect is disabled on this server. Enable it in the Jellyfin dashboard.",
                                 )
-                            return@launch
+                            return@launchIO
                         }
 
                         var quickConnectStatus =
