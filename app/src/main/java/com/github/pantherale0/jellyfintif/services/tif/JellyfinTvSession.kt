@@ -9,6 +9,9 @@ import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
 import android.net.Uri
 import android.view.Surface
+import com.github.pantherale0.jellyfintif.R
+import android.view.View
+import android.view.LayoutInflater
 import androidx.core.net.toUri
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -71,6 +74,13 @@ class JellyfinTvSession(
     private var playbackAnchorUtcMs: Long = 0L
     private val seekMutex = Mutex()
 
+    init {
+        setOverlayViewEnabled(true)
+    }
+
+    private var bufferingOverlay: View? = null
+    private var bufferingOverlayVisible = false
+
     override fun onRelease() {
         tuneJob?.cancel()
         val position = player?.currentPosition?.milliseconds ?: 0.milliseconds
@@ -84,6 +94,13 @@ class JellyfinTvSession(
         player = null
         sessionScope.cancel()
     }
+
+
+    override fun onCreateOverlayView(): View =
+        LayoutInflater.from(appContext).inflate(R.layout.tif_playback_overlay, null).also { overlay ->
+            bufferingOverlay = overlay
+            overlay.visibility = if (bufferingOverlayVisible) View.VISIBLE else View.GONE
+        }
 
     override fun onSetCaptionEnabled(enabled: Boolean) {
         // Live TV captions are not configured for system input playback
@@ -174,6 +191,7 @@ class JellyfinTvSession(
         }
         notifyTimeShiftStatusChanged(TvInputManager.TIME_SHIFT_STATUS_UNAVAILABLE)
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
+        showBufferingOverlay()
         tuneJob?.cancel()
         tuneJob =
             sessionScope.launchIO {
@@ -217,7 +235,16 @@ class JellyfinTvSession(
                                 object : Player.Listener {
                                     override fun onPlayerError(error: PlaybackException) {
                                         Timber.e(error, "TIF playback error")
+                                        hideBufferingOverlay()
                                         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                                    }
+
+                                    override fun onIsLoadingChanged(isLoading: Boolean) {
+                                        if (isLoading) {
+                                            notifyBuffering()
+                                        } else {
+                                            maybeMarkVideoAvailable()
+                                        }
                                     }
 
                                     override fun onPlaybackStateChanged(playbackState: Int) {
@@ -227,10 +254,12 @@ class JellyfinTvSession(
                                                 attachVideoSurface(player, force = true)
                                                 maybeMarkVideoAvailable()
                                             }
-                                            Player.STATE_ENDED ->
+                                            Player.STATE_ENDED -> {
+                                                hideBufferingOverlay()
                                                 notifyVideoUnavailable(
                                                     TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN,
                                                 )
+                                            }
                                         }
                                     }
 
@@ -345,10 +374,21 @@ class JellyfinTvSession(
         exoPlayer?.setVideoSurface(surface)
     }
 
+    private fun showBufferingOverlay() {
+        bufferingOverlayVisible = true
+        bufferingOverlay?.visibility = View.VISIBLE
+    }
+
+    private fun hideBufferingOverlay() {
+        bufferingOverlayVisible = false
+        bufferingOverlay?.visibility = View.GONE
+    }
+
     private fun notifyBuffering() {
         videoAvailableNotified = false
         ConnectionLog.playback("notifyVideoUnavailable: BUFFERING")
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING)
+        showBufferingOverlay()
     }
 
     private fun maybeMarkVideoAvailable() {
@@ -357,12 +397,14 @@ class JellyfinTvSession(
         val exoPlayer = player ?: return
         if (!firstFrameRendered) return
         if (exoPlayer.playbackState != Player.STATE_READY) return
+        if (exoPlayer.isLoading) return
         markVideoAvailable()
     }
 
     private fun markVideoAvailable() {
         if (videoAvailableNotified) return
         if (pendingSurface?.isValid != true) return
+        hideBufferingOverlay()
         publishContentAllowed(currentChannelUri)
         player?.currentTracks?.let { publishTifTrackInfo(it) }
         if (hostSurfaceWidth > 0 && hostSurfaceHeight > 0) {

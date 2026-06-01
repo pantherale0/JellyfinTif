@@ -14,4 +14,5 @@
     <string name="tif_setup_sync_failed">Could not sync Live TV data. Check your connection and try again.</string>
     <string name="tif_setup_explanation">Jellyfin Live TV will synchronize your channels and program guide data directly into Android TV.</string>
     <string name="tif_setup_warning">This process will download channel logos and parse program data for the next 48 hours. Depending on your channel count, this might take a minute or two.</string>
+    <string name="tif_playback_buffering">Buffering</string>
 </resources>
