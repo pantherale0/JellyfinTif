@@ -20,6 +20,7 @@ import org.jellyfin.sdk.createJellyfin
 import org.jellyfin.sdk.model.ClientInfo
 import org.jellyfin.sdk.model.DeviceInfo
 import javax.inject.Qualifier
+import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
 @Qualifier
@@ -69,7 +70,10 @@ object AppModule {
                         }
                     }
                 }
-            }.build()
+            }
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .build()
 
     @AuthOkHttpClient
     @Provides
@@ -101,7 +105,10 @@ object AppModule {
                             ).build()
                     }
                 chain.proceed(newRequest ?: request)
-            }.build()
+            }
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .build()
 
     @Provides
     @Singleton
