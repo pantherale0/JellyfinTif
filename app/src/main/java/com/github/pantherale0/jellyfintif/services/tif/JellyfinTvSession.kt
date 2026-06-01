@@ -194,6 +194,9 @@ class JellyfinTvSession(
                     return@launchIO
                 }
                 currentChannelId = channelId
+                withContext(Dispatchers.Main) {
+                    notifyBuffering()
+                }
                 val stream = streamHelper.getChannelStream(channelId)
                 if (stream == null) {
                     ConnectionLog.playback("onTune aborted: no stream URL for channel $channelId")
@@ -219,6 +222,7 @@ class JellyfinTvSession(
 
                                     override fun onPlaybackStateChanged(playbackState: Int) {
                                         when (playbackState) {
+                                            Player.STATE_BUFFERING -> notifyBuffering()
                                             Player.STATE_READY -> {
                                                 attachVideoSurface(player, force = true)
                                                 maybeMarkVideoAvailable()
@@ -227,7 +231,6 @@ class JellyfinTvSession(
                                                 notifyVideoUnavailable(
                                                     TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN,
                                                 )
-                                            else -> {}
                                         }
                                     }
 
@@ -340,6 +343,12 @@ class JellyfinTvSession(
         if (!force && attachedSurface === surface) return
         attachedSurface = surface
         exoPlayer?.setVideoSurface(surface)
+    }
+
+    private fun notifyBuffering() {
+        videoAvailableNotified = false
+        ConnectionLog.playback("notifyVideoUnavailable: BUFFERING")
+        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING)
     }
 
     private fun maybeMarkVideoAvailable() {
