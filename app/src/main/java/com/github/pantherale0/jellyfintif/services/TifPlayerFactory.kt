@@ -9,6 +9,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences
+import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -27,7 +28,7 @@ class TifPlayerFactory
         @param:ApplicationContext private val context: Context,
         @param:AuthOkHttpClient private val authOkHttpClient: OkHttpClient,
     ) {
-        fun createTvInputPlayer(): ExoPlayer {
+        fun createTvInputPlayer(forceSoftwareVideoDecoders: Boolean = false): ExoPlayer {
             val extractorsFactory = createTvInputExtractorsFactory()
             val ffmpegAvailable =
                 runCatching {
@@ -39,11 +40,17 @@ class TifPlayerFactory
                 } else {
                     DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
                 }
+            val codecSelector =
+                if (forceSoftwareVideoDecoders) {
+                    TV_INPUT_SOFTWARE_VIDEO_CODEC_SELECTOR
+                } else {
+                    TV_INPUT_MEDIA_CODEC_SELECTOR
+                }
             val renderersFactory: RenderersFactory =
                 DefaultRenderersFactory(context)
                     .setEnableDecoderFallback(true)
                     .setExtensionRendererMode(extensionMode)
-                    .setMediaCodecSelector(TV_INPUT_MEDIA_CODEC_SELECTOR)
+                    .setMediaCodecSelector(codecSelector)
             val mediaSourceFactory =
                 TifMediaSourceFactory(
                     OkHttpDataSource.Factory(authOkHttpClient),
@@ -88,32 +95,81 @@ class TifPlayerFactory
             }
 
         companion object {
+            private val TIF_PREFERRED_VIDEO_DECODERS =
+                listOf(
+                    "c2.android.avc.decoder",
+                    "OMX.google.h264.decoder",
+                    "c2.android.hevc.decoder",
+                    "OMX.google.hevc.decoder",
+                )
+
+            /**
+             * Prefer software decoders for TIF playback. Many TV hosts (including Sony Live
+             * Channels) provide a Surface that does not render hardware-decoded frames from
+             * vendor codecs such as MTK or Amlogic.
+             */
             private val TV_INPUT_MEDIA_CODEC_SELECTOR =
                 MediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
-                    val infos =
-                        MediaCodecSelector.DEFAULT.getDecoderInfos(
+                    if (!mimeType.startsWith("video/")) {
+                        return@MediaCodecSelector MediaCodecSelector.DEFAULT.getDecoderInfos(
                             mimeType,
                             requiresSecure,
                             requiresTunneling,
                         )
-                    if (!mimeType.startsWith("video/")) {
-                        return@MediaCodecSelector infos
                     }
-                    infos.sortedWith(
-                        compareBy<androidx.media3.exoplayer.mediacodec.MediaCodecInfo> { info ->
-                            when {
-                                info.softwareOnly -> 2
-                                !info.hardwareAccelerated -> 1
-                                else -> 0
-                            }
-                        }.thenBy { info ->
-                            when {
-                                info.name.startsWith("OMX.google.", ignoreCase = true) -> 1
-                                info.name.startsWith("c2.android.", ignoreCase = true) -> 1
-                                else -> 0
-                            }
-                        },
+                    selectTifVideoDecoders(
+                        MediaCodecSelector.DEFAULT.getDecoderInfos(
+                            mimeType,
+                            false,
+                            false,
+                        ),
                     )
                 }
+
+            private val TV_INPUT_SOFTWARE_VIDEO_CODEC_SELECTOR =
+                MediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
+                    if (!mimeType.startsWith("video/")) {
+                        return@MediaCodecSelector MediaCodecSelector.DEFAULT.getDecoderInfos(
+                            mimeType,
+                            requiresSecure,
+                            requiresTunneling,
+                        )
+                    }
+                    val infos =
+                        MediaCodecSelector.DEFAULT.getDecoderInfos(
+                            mimeType,
+                            false,
+                            false,
+                        )
+                    val software =
+                        infos.filter { info ->
+                            info.softwareOnly || !info.hardwareAccelerated
+                        }
+                    software.ifEmpty { selectTifVideoDecoders(infos) }
+                }
+
+            private fun selectTifVideoDecoders(infos: List<MediaCodecInfo>): List<MediaCodecInfo> {
+                val preferred =
+                    TIF_PREFERRED_VIDEO_DECODERS.mapNotNull { name ->
+                        infos.find { it.name == name }
+                    }
+                if (preferred.isNotEmpty()) {
+                    return preferred
+                }
+                val software =
+                    infos.filter { info ->
+                        info.softwareOnly || !info.hardwareAccelerated
+                    }
+                if (software.isNotEmpty()) {
+                    return software
+                }
+                val filtered =
+                    infos.filter { info ->
+                        !info.name.contains("secure", ignoreCase = true) &&
+                            !info.name.contains("MTK", ignoreCase = true) &&
+                            !info.name.contains("amlogic", ignoreCase = true)
+                    }
+                return filtered.ifEmpty { infos }
+            }
         }
     }

@@ -31,6 +31,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -74,6 +75,8 @@ class JellyfinTvSession(
     private var playbackAnchorUtcMs: Long = 0L
     private val seekMutex = Mutex()
     private var playbackRetryCount = 0
+    private var forceSoftwareVideoDecoders = false
+    private var firstFrameWatchdogJob: Job? = null
 
     init {
         setOverlayViewEnabled(true)
@@ -81,9 +84,11 @@ class JellyfinTvSession(
 
     private var bufferingOverlay: View? = null
     private var bufferingOverlayVisible = false
+    private var overlayViewCreated = false
 
     override fun onRelease() {
         tuneJob?.cancel()
+        cancelFirstFrameWatchdog()
         val position = player?.currentPosition?.milliseconds ?: 0.milliseconds
         sessionScope.launchIO {
             reportPlaybackStopped(position)
@@ -99,9 +104,21 @@ class JellyfinTvSession(
 
     override fun onCreateOverlayView(): View =
         LayoutInflater.from(appContext).inflate(R.layout.tif_playback_overlay, null).also { overlay ->
+            overlayViewCreated = true
             bufferingOverlay = overlay
-            overlay.visibility = if (bufferingOverlayVisible) View.VISIBLE else View.GONE
+            ConnectionLog.playback("onCreateOverlayView: host requested buffering overlay")
+            updateBufferingOverlayVisibility()
         }
+
+    override fun onOverlayViewSizeChanged(
+        width: Int,
+        height: Int,
+    ) {
+        ConnectionLog.playback("onOverlayViewSizeChanged: ${width}x$height")
+        if (width > 0 && height > 0) {
+            updateBufferingOverlayVisibility()
+        }
+    }
 
     override fun onSetCaptionEnabled(enabled: Boolean) {
         // Live TV captions are not configured for system input playback
@@ -182,6 +199,8 @@ class JellyfinTvSession(
         videoAvailableNotified = false
         firstFrameRendered = false
         playbackRetryCount = 0
+        forceSoftwareVideoDecoders = false
+        cancelFirstFrameWatchdog()
         tuneStartedAtMs = System.currentTimeMillis()
         currentLiveStream = null
         timeshiftWindow = null
@@ -192,8 +211,8 @@ class JellyfinTvSession(
             applySurfaceLayout(hostSurfaceWidth, hostSurfaceHeight, force = true)
         }
         notifyTimeShiftStatusChanged(TvInputManager.TIME_SHIFT_STATUS_UNAVAILABLE)
-        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
-        showBufferingOverlay()
+        setOverlayViewEnabled(true)
+        notifyInitialLoad()
         tuneJob?.cancel()
         tuneJob =
             sessionScope.launchIO {
@@ -215,7 +234,7 @@ class JellyfinTvSession(
                 }
                 currentChannelId = channelId
                 withContext(Dispatchers.Main) {
-                    notifyBuffering()
+                    notifyInitialLoad()
                 }
                 val stream = streamHelper.getChannelStream(channelId)
                 if (stream == null) {
@@ -312,7 +331,7 @@ class JellyfinTvSession(
 
             override fun onIsLoadingChanged(isLoading: Boolean) {
                 if (isLoading) {
-                    notifyBuffering()
+                    notifyPlaybackLoading()
                 } else {
                     maybeMarkVideoAvailable()
                 }
@@ -320,7 +339,7 @@ class JellyfinTvSession(
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
-                    Player.STATE_BUFFERING -> notifyBuffering()
+                    Player.STATE_BUFFERING -> notifyPlaybackLoading()
                     Player.STATE_READY -> {
                         attachVideoSurface(player, force = true)
                         maybeMarkVideoAvailable()
@@ -339,6 +358,7 @@ class JellyfinTvSession(
             override fun onRenderedFirstFrame() {
                 if (firstFrameRendered) return
                 firstFrameRendered = true
+                cancelFirstFrameWatchdog()
                 attachVideoSurface(
                     player,
                     force = true,
@@ -361,15 +381,17 @@ class JellyfinTvSession(
         stream: LiveTvStream,
         reportStart: Boolean,
     ) {
-        val exoPlayer = player ?: playerFactory.createTvInputPlayer().also { created ->
-            created.addListener(createPlaybackListener())
-            player = created
-        }
+        val exoPlayer =
+            player ?: playerFactory.createTvInputPlayer(forceSoftwareVideoDecoders).also { created ->
+                created.addListener(createPlaybackListener())
+                player = created
+            }
         attachVideoSurface(exoPlayer, force = true, allowBeforeReady = true)
         exoPlayer.setMediaItem(buildMediaItem(stream))
         playbackAnchorUtcMs = System.currentTimeMillis()
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
+        startFirstFrameWatchdog()
         notifyTimeShiftStatusChanged(
             if (timeshiftWindow?.isAvailable == true) {
                 TvInputManager.TIME_SHIFT_STATUS_AVAILABLE
@@ -390,7 +412,7 @@ class JellyfinTvSession(
             ConnectionLog.playback(
                 "recoverable playback error (${error.cause?.javaClass?.simpleName}), retry $playbackRetryCount/$MAX_PLAYBACK_RETRIES",
             )
-            notifyBuffering()
+            notifyInitialLoad()
             val channelId = currentChannelId ?: return
             sessionScope.launchIO {
                 val stream =
@@ -436,23 +458,79 @@ class JellyfinTvSession(
 
     private companion object {
         private const val MAX_PLAYBACK_RETRIES = 2
+        private const val FIRST_FRAME_TIMEOUT_MS = 8_000L
     }
 
     private fun showBufferingOverlay() {
         bufferingOverlayVisible = true
-        bufferingOverlay?.visibility = View.VISIBLE
+        if (!overlayViewCreated) {
+            setOverlayViewEnabled(true)
+        }
+        updateBufferingOverlayVisibility()
     }
 
     private fun hideBufferingOverlay() {
         bufferingOverlayVisible = false
-        bufferingOverlay?.visibility = View.GONE
+        updateBufferingOverlayVisibility()
     }
 
-    private fun notifyBuffering() {
+    private fun updateBufferingOverlayVisibility() {
+        bufferingOverlay?.visibility =
+            if (bufferingOverlayVisible) View.VISIBLE else View.GONE
+    }
+
+    private fun notifyInitialLoad() {
+        videoAvailableNotified = false
+        ConnectionLog.playback("notifyVideoUnavailable: TUNING")
+        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
+        showBufferingOverlay()
+    }
+
+    private fun notifyRebuffering() {
         videoAvailableNotified = false
         ConnectionLog.playback("notifyVideoUnavailable: BUFFERING")
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING)
         showBufferingOverlay()
+    }
+
+    private fun notifyPlaybackLoading() {
+        if (firstFrameRendered || videoAvailableNotified) {
+            notifyRebuffering()
+        } else {
+            notifyInitialLoad()
+        }
+    }
+
+    private fun startFirstFrameWatchdog() {
+        cancelFirstFrameWatchdog()
+        firstFrameWatchdogJob =
+            sessionScope.launch {
+                delay(FIRST_FRAME_TIMEOUT_MS)
+                if (firstFrameRendered || videoAvailableNotified) return@launch
+                if (forceSoftwareVideoDecoders) return@launch
+                ConnectionLog.playback(
+                    "no first frame within ${FIRST_FRAME_TIMEOUT_MS}ms, falling back to software decoder",
+                )
+                forceSoftwareVideoDecoders = true
+                fallbackToSoftwareDecoder()
+            }
+    }
+
+    private fun cancelFirstFrameWatchdog() {
+        firstFrameWatchdogJob?.cancel()
+        firstFrameWatchdogJob = null
+    }
+
+    private fun fallbackToSoftwareDecoder() {
+        val channelId = currentChannelId ?: return
+        val stream = currentLiveStream ?: return
+        player?.release()
+        player = null
+        attachedSurface = null
+        firstFrameRendered = false
+        videoAvailableNotified = false
+        notifyInitialLoad()
+        startChannelPlayback(channelId, stream, reportStart = false)
     }
 
     private fun maybeMarkVideoAvailable() {
