@@ -82,7 +82,7 @@ class JellyfinTifSetupActivity : ComponentActivity() {
                     onConnect = viewModel::connectToServer,
                     onCancelQuickConnect = viewModel::cancelQuickConnect,
                     onRetry = viewModel::resetToServerEntry,
-                    enqueueSync = { epgSyncScheduler.enqueueSync() }
+                    enqueueSync = { epgSyncScheduler.enqueueSync() },
                     observeWork = { workId -> observeSyncWork(workId) },
                 )
             }
