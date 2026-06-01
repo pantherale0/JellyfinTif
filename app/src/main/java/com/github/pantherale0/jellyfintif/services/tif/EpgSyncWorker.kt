@@ -5,12 +5,12 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.github.pantherale0.jellyfintif.data.SessionRepository
+import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.exception.ApiClientException
 import org.jellyfin.sdk.model.serializer.toUUIDOrNull
-import timber.log.Timber
 
 /**
  * Background worker that syncs Jellyfin Live TV data into the system TV guide.
@@ -26,36 +26,47 @@ class EpgSyncWorker
         private val tifSyncManager: TifSyncManager,
     ) : CoroutineWorker(context, workerParams) {
         override suspend fun doWork(): Result {
-            Timber.d("EpgSyncWorker starting")
             val serverId =
-                inputData.getString(PARAM_SERVER_ID)?.toUUIDOrNull() ?: return Result.failure()
+                inputData.getString(PARAM_SERVER_ID)?.toUUIDOrNull()
             val userId =
-                inputData.getString(PARAM_USER_ID)?.toUUIDOrNull() ?: return Result.failure()
+                inputData.getString(PARAM_USER_ID)?.toUUIDOrNull()
+            if (serverId == null || userId == null) {
+                ConnectionLog.sync("EpgSyncWorker aborted: missing input data (serverId=$serverId userId=$userId)")
+                return Result.failure()
+            }
+            ConnectionLog.sync("EpgSyncWorker starting serverId=$serverId userId=$userId")
+            ConnectionLog.apiClient("epg.worker", api)
 
             if (api.baseUrl.isNullOrBlank() || api.accessToken.isNullOrBlank()) {
+                ConnectionLog.sync("EpgSyncWorker: ApiClient not configured, attempting session restore")
                 if (!sessionRepository.restoreSession()) {
-                    Timber.w("EpgSyncWorker: no authenticated user")
+                    ConnectionLog.sync("EpgSyncWorker aborted: session restore failed")
                     return Result.failure()
                 }
             }
 
             return try {
                 when (val syncResult = tifSyncManager.syncAll()) {
-                    is TifSyncManager.SyncResult.NotAuthenticated -> Result.failure()
-                    is TifSyncManager.SyncResult.Error -> Result.failure()
+                    is TifSyncManager.SyncResult.NotAuthenticated -> {
+                        ConnectionLog.sync("EpgSyncWorker failed: not authenticated")
+                        Result.failure()
+                    }
+                    is TifSyncManager.SyncResult.Error -> {
+                        ConnectionLog.sync("EpgSyncWorker failed: ${syncResult.message}")
+                        Result.failure()
+                    }
                     is TifSyncManager.SyncResult.Success -> {
-                        Timber.d(
-                            "EpgSyncWorker synced %s channels, %s programs",
-                            syncResult.channels,
-                            syncResult.programs,
+                        ConnectionLog.sync(
+                            "EpgSyncWorker complete: ${syncResult.channels} channels, ${syncResult.programs} programs",
                         )
                         Result.success()
                     }
                 }
-            } catch (_: ApiClientException) {
+            } catch (ex: ApiClientException) {
+                ConnectionLog.sync("EpgSyncWorker API error, will retry", ex)
                 Result.retry()
             } catch (ex: Exception) {
-                Timber.e(ex, "EpgSyncWorker failed")
+                ConnectionLog.sync("EpgSyncWorker failed", ex)
                 Result.failure()
             }
         }

@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.github.pantherale0.jellyfintif.data.SessionRepository
+import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.runBlocking
 import timber.log.Timber
@@ -44,7 +45,9 @@ class TifApplication :
             )
         }
         runBlocking {
-            sessionRepository.restoreSession()
+            ConnectionLog.session("application startup: attempting session restore")
+            val restored = sessionRepository.restoreSession()
+            ConnectionLog.session("application startup: session restore success=$restored")
         }
     }
 

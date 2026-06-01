@@ -83,6 +83,23 @@ Every push to `main` also updates the **`develop`** pre-release with the latest 
 
 Without signing secrets, release APKs are built unsigned (suitable for sideloading only).
 
+## Debugging connection issues
+
+Filter logcat to connection diagnostics (debug builds also log HTTP requests):
+
+```bash
+adb logcat -s Connection JellyfinTif
+```
+
+Log prefixes:
+- `[setup]` — server discovery, Quick Connect, setup activity
+- `[session]` — session save/restore
+- `[sync]` — EPG/channel sync worker
+- `[playback]` — tune and stream resolution
+- `[http]` — HTTP method, host/path, status (debug builds only; no auth headers)
+
+Secrets (access tokens, Quick Connect secrets) are never logged.
+
 ## Architecture
 
 - **No launcher activity** — discovered only when adding a Live TV input (`SETUP_INPUT`).

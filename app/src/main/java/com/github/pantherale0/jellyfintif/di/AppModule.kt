@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.WorkManager
 import com.github.pantherale0.jellyfintif.BuildConfig
 import com.github.pantherale0.jellyfintif.R
+import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -45,7 +46,30 @@ object AppModule {
     @StandardOkHttpClient
     @Provides
     @Singleton
-    fun okHttpClient(): OkHttpClient = OkHttpClient.Builder().build()
+    fun okHttpClient(): OkHttpClient =
+        OkHttpClient
+            .Builder()
+            .apply {
+                if (BuildConfig.DEBUG) {
+                    addInterceptor { chain ->
+                        val request = chain.request()
+                        val started = System.nanoTime()
+                        try {
+                            val response = chain.proceed(request)
+                            ConnectionLog.http(
+                                request.method,
+                                request.url.toString(),
+                                response.code,
+                                (System.nanoTime() - started) / 1_000_000,
+                            )
+                            response
+                        } catch (ex: Exception) {
+                            ConnectionLog.httpFailure(request.method, request.url.toString(), ex)
+                            throw ex
+                        }
+                    }
+                }
+            }.build()
 
     @AuthOkHttpClient
     @Provides

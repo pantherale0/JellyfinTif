@@ -20,6 +20,7 @@ import com.github.pantherale0.jellyfintif.services.livetv.LiveTvStream
 import com.github.pantherale0.jellyfintif.data.SessionRepository
 import com.github.pantherale0.jellyfintif.services.TifPlayerFactory
 import org.jellyfin.sdk.model.serializer.toUUIDOrNull
+import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import com.github.pantherale0.jellyfintif.util.launchIO
 import com.github.pantherale0.jellyfintif.services.livetv.LiveTvTimeshiftWindow
 import kotlinx.coroutines.CoroutineScope
@@ -176,8 +177,9 @@ class JellyfinTvSession(
         tuneJob?.cancel()
         tuneJob =
             sessionScope.launchIO {
+                ConnectionLog.playback("onTune: channelUri=$channelUri")
                 if (!ensureAuthenticated()) {
-                    Timber.w("TIF tune: not authenticated")
+                    ConnectionLog.playback("onTune aborted: not authenticated")
                     withContext(Dispatchers.Main) {
                         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     }
@@ -185,7 +187,7 @@ class JellyfinTvSession(
                 }
                 val channelId = resolveChannelId(channelUri)
                 if (channelId == null) {
-                    Timber.w("TIF tune: could not resolve channel from %s", channelUri)
+                    ConnectionLog.playback("onTune aborted: could not resolve channel from $channelUri")
                     withContext(Dispatchers.Main) {
                         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     }
@@ -194,13 +196,16 @@ class JellyfinTvSession(
                 currentChannelId = channelId
                 val stream = streamHelper.getChannelStream(channelId)
                 if (stream == null) {
-                    Timber.w("TIF tune: no stream URL for channel %s", channelId)
+                    ConnectionLog.playback("onTune aborted: no stream URL for channel $channelId")
                     withContext(Dispatchers.Main) {
                         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     }
                     return@launchIO
                 }
                 currentLiveStream = stream
+                ConnectionLog.playback(
+                    "onTune resolved channel=$channelId mimeType=${stream.mimeType} bufferMs=${stream.bufferMs}",
+                )
                 updateTimeshiftWindow(stream)
                 withContext(Dispatchers.Main) {
                     val exoPlayer =
@@ -486,9 +491,16 @@ class JellyfinTvSession(
 
     private suspend fun ensureAuthenticated(): Boolean {
         if (!api.accessToken.isNullOrBlank() && !api.baseUrl.isNullOrBlank()) {
+            ConnectionLog.playback("ensureAuthenticated: already configured")
             return true
         }
-        return sessionRepository.restoreSession()
+        ConnectionLog.playback("ensureAuthenticated: restoring session")
+        val restored = sessionRepository.restoreSession()
+        if (!restored) {
+            ConnectionLog.playback("ensureAuthenticated: restore failed")
+        }
+        ConnectionLog.apiClient("playback.tune", api)
+        return restored
     }
 
     private suspend fun reportPlaybackStarted(channelId: UUID) {

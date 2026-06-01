@@ -6,12 +6,12 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.model.api.AuthenticationResult
 import org.jellyfin.sdk.model.serializer.toUUIDOrNull
-import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 import org.jellyfin.sdk.model.UUID
@@ -85,14 +85,35 @@ class SessionRepository
                 prefs[accessTokenKey] = accessToken
                 prefs[serverNameKey] = authedUser.serverName ?: ""
             }
-            Timber.i("Session saved for user %s on %s", authedUser.name, serverUrl)
+            ConnectionLog.session(
+                "saved user=${authedUser.name} userId=${authedUser.id} serverId=$serverId url=$serverUrl",
+            )
+            ConnectionLog.apiClient("session.save", apiClient)
         }
 
         suspend fun restoreSession(): Boolean {
-            if (isAuthenticated) return true
-            val session = getSession() ?: return false
+            if (isAuthenticated) {
+                ConnectionLog.session("restoreSession: already active")
+                ConnectionLog.apiClient("session.restore", apiClient)
+                return true
+            }
+            val session = getSession()
+            if (session == null) {
+                ConnectionLog.session("restoreSession: no persisted session in DataStore")
+                return false
+            }
+            ConnectionLog.session(
+                "restoreSession: loading userId=${session.userId} serverId=${session.serverId} url=${session.serverUrl}",
+            )
             apiClient.update(baseUrl = session.serverUrl, accessToken = session.accessToken)
-            return isAuthenticated
+            val restored = isAuthenticated
+            if (restored) {
+                ConnectionLog.session("restoreSession: success")
+            } else {
+                ConnectionLog.session("restoreSession: failed — ApiClient not configured after update")
+            }
+            ConnectionLog.apiClient("session.restore", apiClient)
+            return restored
         }
 
         suspend fun getUserId(): UUID? = getSession()?.userId
@@ -102,6 +123,7 @@ class SessionRepository
         suspend fun getAccessToken(): String? = getSession()?.accessToken ?: apiClient.accessToken
 
         suspend fun clearSession() {
+            ConnectionLog.session("clearSession")
             dataStore.edit { it.clear() }
             apiClient.update(baseUrl = null, accessToken = null)
         }

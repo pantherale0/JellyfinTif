@@ -2,8 +2,8 @@ package com.github.pantherale0.jellyfintif.services.livetv
 
 import androidx.media3.common.MimeTypes
 import com.github.pantherale0.jellyfintif.LiveTvConstants
-import com.github.pantherale0.jellyfintif.data.SessionRepository
 import com.github.pantherale0.jellyfintif.services.DeviceProfileService
+import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.dynamicHlsApi
 import org.jellyfin.sdk.api.client.extensions.liveTvApi
@@ -12,7 +12,6 @@ import org.jellyfin.sdk.api.client.extensions.videosApi
 import org.jellyfin.sdk.model.UUID
 import org.jellyfin.sdk.model.api.MediaSourceInfo
 import org.jellyfin.sdk.model.api.PlaybackInfoDto
-import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -47,44 +46,69 @@ class LiveTvStreamResolver
             channelId: UUID,
             options: LiveTvResolveOptions = LiveTvResolveOptions(),
         ): LiveTvStream? {
+            val optionsSummary =
+                "startTimeTicks=${options.startTimeTicks}, liveStreamId=${options.liveStreamId}, " +
+                    "mediaSourceId=${options.mediaSourceId}, directPlay=${options.enableDirectPlay}, " +
+                    "directStream=${options.enableDirectStream}"
+
             if (api.baseUrl.isNullOrBlank() || api.accessToken.isNullOrBlank()) {
-                Timber.w("Live TV stream: API client is not authenticated")
+                ConnectionLog.streamResolveFailure(channelId, "API client not authenticated")
+                ConnectionLog.apiClient("stream.resolve", api)
                 return null
             }
-            val maxBitrate = LiveTvConstants.DEFAULT_BITRATE
-            val response by
-                api.mediaInfoApi.getPostedPlaybackInfo(
+
+            return try {
+                val maxBitrate = LiveTvConstants.DEFAULT_BITRATE
+                val response by
+                    api.mediaInfoApi.getPostedPlaybackInfo(
+                        channelId,
+                        PlaybackInfoDto(
+                            startTimeTicks = options.startTimeTicks,
+                            liveStreamId = options.liveStreamId,
+                            mediaSourceId = options.mediaSourceId,
+                            audioStreamIndex = options.audioStreamIndex,
+                            subtitleStreamIndex = options.subtitleStreamIndex,
+                            deviceProfile = deviceProfileService.getOrCreateDeviceProfile(),
+                            alwaysBurnInSubtitleWhenTranscoding = false,
+                            maxStreamingBitrate = maxBitrate,
+                            enableDirectPlay = options.enableDirectPlay,
+                            enableDirectStream = options.enableDirectStream,
+                            allowVideoStreamCopy = options.enableDirectStream,
+                            allowAudioStreamCopy = options.enableDirectStream,
+                            enableTranscoding = true,
+                            autoOpenLiveStream = true,
+                        ),
+                    )
+                if (response.errorCode != null) {
+                    ConnectionLog.streamResolveFailure(
+                        channelId,
+                        "playback info errorCode=${response.errorCode}",
+                    )
+                    return null
+                }
+                val source = response.mediaSources.firstOrNull()
+                if (source == null) {
+                    ConnectionLog.streamResolveFailure(channelId, "no media sources in playback info response")
+                    return null
+                }
+                ConnectionLog.streamResolve(
                     channelId,
-                    PlaybackInfoDto(
-                        startTimeTicks = options.startTimeTicks,
-                        liveStreamId = options.liveStreamId,
-                        mediaSourceId = options.mediaSourceId,
-                        audioStreamIndex = options.audioStreamIndex,
-                        subtitleStreamIndex = options.subtitleStreamIndex,
-                        deviceProfile = deviceProfileService.getOrCreateDeviceProfile(),
-                        alwaysBurnInSubtitleWhenTranscoding = false,
-                        maxStreamingBitrate = maxBitrate,
-                        enableDirectPlay = options.enableDirectPlay,
-                        enableDirectStream = options.enableDirectStream,
-                        allowVideoStreamCopy = options.enableDirectStream,
-                        allowAudioStreamCopy = options.enableDirectStream,
-                        enableTranscoding = true,
-                        autoOpenLiveStream = true,
-                    ),
+                    optionsSummary,
+                    "playbackInfo: container=${source.container} transcode=${!source.transcodingUrl.isNullOrBlank()} " +
+                        "liveStreamId=${source.liveStreamId} bufferMs=${source.bufferMs}",
                 )
-            if (response.errorCode != null) {
-                Timber.w("Live TV stream: playback info error %s", response.errorCode)
-                return null
+                val resolved = resolveStreamUrl(channelId, source, response.playSessionId, options.startTimeTicks)
+                resolved?.copy(
+                    liveStreamId = source.liveStreamId,
+                    playSessionId = response.playSessionId,
+                    mediaSourceId = source.id,
+                    bufferMs = source.bufferMs,
+                    mediaSourceInfo = source,
+                )
+            } catch (ex: Exception) {
+                ConnectionLog.streamResolveFailure(channelId, "exception during resolve", ex)
+                null
             }
-            val source = response.mediaSources.firstOrNull() ?: return null
-            val resolved = resolveStreamUrl(channelId, source, response.playSessionId, options.startTimeTicks)
-            return resolved?.copy(
-                liveStreamId = source.liveStreamId,
-                playSessionId = response.playSessionId,
-                mediaSourceId = source.id,
-                bufferMs = source.bufferMs,
-                mediaSourceInfo = source,
-            )
         }
 
         private fun resolveStreamUrl(
@@ -106,8 +130,10 @@ class LiveTvStreamResolver
             val transcodingUrl = source.transcodingUrl
             val url: String
             val mimeType: String?
+            val strategy: String
             when {
                 prefersTimeshiftHls -> {
+                    strategy = "timeshift-hls"
                     url =
                         api.dynamicHlsApi.getMasterHlsVideoPlaylistUrl(
                             itemId = channelId,
@@ -126,11 +152,13 @@ class LiveTvStreamResolver
                 }
 
                 !transcodingUrl.isNullOrBlank() -> {
+                    strategy = "transcoding-url"
                     url = api.createUrl(transcodingUrl)
                     mimeType = mimeTypeForStreamUrl(url, source.container)
                 }
 
                 hasMasterHls -> {
+                    strategy = "live-hls"
                     url =
                         api.dynamicHlsApi.getMasterHlsVideoPlaylistUrl(
                             itemId = channelId,
@@ -149,11 +177,13 @@ class LiveTvStreamResolver
                 }
 
                 liveStreamSessionId != null -> {
+                    strategy = "live-ts"
                     url = api.liveTvApi.getLiveStreamFileUrl(liveStreamSessionId, segmentContainer)
                     mimeType = MimeTypes.VIDEO_MP2T
                 }
 
                 source.supportsDirectPlay -> {
+                    strategy = "direct-play"
                     url =
                         api.createUrl(
                             api.videosApi.getVideoStreamUrl(
@@ -167,9 +197,23 @@ class LiveTvStreamResolver
                     mimeType = mimeTypeForContainer(source.container)
                 }
 
-                else -> return null
+                else -> {
+                    ConnectionLog.streamResolveFailure(
+                        channelId,
+                        "no compatible stream strategy (container=${source.container}, directPlay=${source.supportsDirectPlay})",
+                    )
+                    return null
+                }
             }
-            if (url.isBlank()) return null
+            if (url.isBlank()) {
+                ConnectionLog.streamResolveFailure(channelId, "strategy=$strategy returned blank URL")
+                return null
+            }
+            ConnectionLog.streamResolve(
+                channelId,
+                "strategy=$strategy",
+                "mimeType=$mimeType url=${ConnectionLog.sanitizeUrl(url)}",
+            )
             return LiveTvStream(
                 url = url,
                 mimeType = mimeType,

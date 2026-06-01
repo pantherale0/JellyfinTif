@@ -9,6 +9,7 @@ import androidx.work.workDataOf
 import com.github.pantherale0.jellyfintif.data.SessionRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.runBlocking
+import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import timber.log.Timber
 import java.util.UUID
 import javax.inject.Inject
@@ -31,14 +32,26 @@ class EpgSyncScheduler
                     context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
 
         fun enqueueSync(): UUID? {
+            ConnectionLog.sync("enqueueSync requested")
             if (!supportsTif) {
-                Timber.w("TIF sync not supported on this device")
+                ConnectionLog.sync("enqueueSync aborted: device lacks leanback feature")
                 return null
             }
             return runBlocking {
-                if (!sessionRepository.restoreSession()) return@runBlocking null
-                val userId = sessionRepository.getUserId() ?: return@runBlocking null
-                val serverId = sessionRepository.getServerId() ?: return@runBlocking null
+                if (!sessionRepository.restoreSession()) {
+                    ConnectionLog.sync("enqueueSync aborted: session restore failed")
+                    return@runBlocking null
+                }
+                val userId = sessionRepository.getUserId()
+                if (userId == null) {
+                    ConnectionLog.sync("enqueueSync aborted: no user id")
+                    return@runBlocking null
+                }
+                val serverId = sessionRepository.getServerId()
+                if (serverId == null) {
+                    ConnectionLog.sync("enqueueSync aborted: no server id")
+                    return@runBlocking null
+                }
                 val request =
                     OneTimeWorkRequestBuilder<EpgSyncWorker>()
                         .setInputData(
@@ -48,6 +61,7 @@ class EpgSyncScheduler
                             ),
                         ).build()
                 workManager.enqueue(request)
+                ConnectionLog.sync("enqueueSync scheduled workId=${request.id} userId=$userId serverId=$serverId")
                 request.id
             }
         }

@@ -24,6 +24,7 @@ import org.jellyfin.sdk.model.api.ImageType
 import org.jellyfin.sdk.model.api.ItemFields
 import org.jellyfin.sdk.model.api.ItemSortBy
 import org.jellyfin.sdk.model.api.request.GetLiveTvChannelsRequest
+import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import timber.log.Timber
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -49,10 +50,18 @@ class TifSyncManager
         private val inputId = TifUtils.inputId(context)
 
         suspend fun syncAll(): SyncResult {
+            ConnectionLog.sync("syncAll starting")
+            ConnectionLog.apiClient("sync", api)
             if (api.baseUrl.isNullOrBlank() || api.accessToken.isNullOrBlank()) {
+                ConnectionLog.sync("syncAll aborted: API client not authenticated")
                 return SyncResult.NotAuthenticated
             }
-            val userId = sessionRepository.getUserId() ?: return SyncResult.NotAuthenticated
+            val userId = sessionRepository.getUserId()
+            if (userId == null) {
+                ConnectionLog.sync("syncAll aborted: no user id in session")
+                return SyncResult.NotAuthenticated
+            }
+            ConnectionLog.sync("syncAll for userId=$userId")
 
             val channelResult by
                 api.liveTvApi.getLiveTvChannels(

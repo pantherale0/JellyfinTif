@@ -40,6 +40,7 @@ import androidx.tv.material3.Text
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.github.pantherale0.jellyfintif.R
+import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import com.github.pantherale0.jellyfintif.data.SessionRepository
 import com.github.pantherale0.jellyfintif.services.tif.EpgSyncScheduler
 import com.github.pantherale0.jellyfintif.services.tif.TifInputServiceReset
@@ -68,6 +69,9 @@ class JellyfinTifSetupActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         TifInputServiceReset.requestRebind(this)
+        ConnectionLog.setup(
+            "JellyfinTifSetupActivity started authenticated=${sessionRepository.isAuthenticated}",
+        )
         setContent {
             JellyfinTifTheme {
                 val viewModel: QuickConnectViewModel = hiltViewModel()
