@@ -7,7 +7,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
@@ -15,6 +14,7 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import com.github.pantherale0.jellyfintif.di.AuthOkHttpClient
+import com.github.pantherale0.jellyfintif.services.tif.TifDeviceQuirks
 import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.OkHttpClient
 import javax.inject.Inject
@@ -44,10 +44,10 @@ class TifPlayerFactory
                 if (forceSoftwareVideoDecoders) {
                     TV_INPUT_SOFTWARE_VIDEO_CODEC_SELECTOR
                 } else {
-                    TV_INPUT_MEDIA_CODEC_SELECTOR
+                    TV_INPUT_HARDWARE_CODEC_SELECTOR
                 }
-            val renderersFactory: RenderersFactory =
-                DefaultRenderersFactory(context)
+            val renderersFactory =
+                TifRenderersFactory(context)
                     .setEnableDecoderFallback(true)
                     .setExtensionRendererMode(extensionMode)
                     .setMediaCodecSelector(codecSelector)
@@ -80,6 +80,10 @@ class TifPlayerFactory
                 .setConstantBitrateSeekingEnabled(true)
                 .setConstantBitrateSeekingAlwaysEnabled(true)
 
+        /**
+         * Tunneling must stay disabled for Sony TIF hosts. roboTV#44 and ExoPlayer#3790 show tunneled
+         * MTK playback breaks audio and/or renders via the VDP plane instead of the app Surface.
+         */
         private fun createTvInputTrackSelector() =
             DefaultTrackSelector(context).apply {
                 setParameters(
@@ -95,7 +99,7 @@ class TifPlayerFactory
             }
 
         companion object {
-            private val TIF_PREFERRED_VIDEO_DECODERS =
+            private val TIF_PREFERRED_SOFTWARE_VIDEO_DECODERS =
                 listOf(
                     "c2.android.avc.decoder",
                     "OMX.google.h264.decoder",
@@ -104,29 +108,10 @@ class TifPlayerFactory
                 )
 
             /**
-             * Prefer software decoders for TIF playback. Many TV hosts (including Sony Live
-             * Channels) provide a Surface that does not render hardware-decoded frames from
-             * vendor codecs such as MTK or Amlogic.
+             * Prefer hardware decoders. Sony/MTK workarounds in [TifMediaCodecVideoRenderer] and
+             * [TifDeviceQuirks] address surface and codec-reuse bugs (androidx/media#2941).
              */
-            private val TV_INPUT_MEDIA_CODEC_SELECTOR =
-                MediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
-                    if (!mimeType.startsWith("video/")) {
-                        return@MediaCodecSelector MediaCodecSelector.DEFAULT.getDecoderInfos(
-                            mimeType,
-                            requiresSecure,
-                            requiresTunneling,
-                        )
-                    }
-                    selectTifVideoDecoders(
-                        MediaCodecSelector.DEFAULT.getDecoderInfos(
-                            mimeType,
-                            false,
-                            false,
-                        ),
-                    )
-                }
-
-            private val TV_INPUT_SOFTWARE_VIDEO_CODEC_SELECTOR =
+            private val TV_INPUT_HARDWARE_CODEC_SELECTOR =
                 MediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
                     if (!mimeType.startsWith("video/")) {
                         return@MediaCodecSelector MediaCodecSelector.DEFAULT.getDecoderInfos(
@@ -138,19 +123,44 @@ class TifPlayerFactory
                     val infos =
                         MediaCodecSelector.DEFAULT.getDecoderInfos(
                             mimeType,
-                            false,
-                            false,
+                            /* requiresSecure= */ false,
+                            /* requiresTunneling= */ false,
                         )
-                    val software =
-                        infos.filter { info ->
-                            info.softwareOnly || !info.hardwareAccelerated
-                        }
-                    software.ifEmpty { selectTifVideoDecoders(infos) }
+                    infos
+                        .filter { info ->
+                            !info.name.contains("secure", ignoreCase = true)
+                        }.sortedWith(
+                            compareBy<MediaCodecInfo> { info ->
+                                when {
+                                    info.softwareOnly -> 2
+                                    !info.hardwareAccelerated -> 1
+                                    else -> 0
+                                }
+                            },
+                        )
                 }
 
-            private fun selectTifVideoDecoders(infos: List<MediaCodecInfo>): List<MediaCodecInfo> {
+            private val TV_INPUT_SOFTWARE_VIDEO_CODEC_SELECTOR =
+                MediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
+                    if (!mimeType.startsWith("video/")) {
+                        return@MediaCodecSelector MediaCodecSelector.DEFAULT.getDecoderInfos(
+                            mimeType,
+                            requiresSecure,
+                            requiresTunneling,
+                        )
+                    }
+                    selectSoftwareVideoDecoders(
+                        MediaCodecSelector.DEFAULT.getDecoderInfos(
+                            mimeType,
+                            false,
+                            false,
+                        ),
+                    )
+                }
+
+            private fun selectSoftwareVideoDecoders(infos: List<MediaCodecInfo>): List<MediaCodecInfo> {
                 val preferred =
-                    TIF_PREFERRED_VIDEO_DECODERS.mapNotNull { name ->
+                    TIF_PREFERRED_SOFTWARE_VIDEO_DECODERS.mapNotNull { name ->
                         infos.find { it.name == name }
                     }
                 if (preferred.isNotEmpty()) {
@@ -163,13 +173,10 @@ class TifPlayerFactory
                 if (software.isNotEmpty()) {
                     return software
                 }
-                val filtered =
-                    infos.filter { info ->
-                        !info.name.contains("secure", ignoreCase = true) &&
-                            !info.name.contains("MTK", ignoreCase = true) &&
-                            !info.name.contains("amlogic", ignoreCase = true)
-                    }
-                return filtered.ifEmpty { infos }
+                return infos.filter { info ->
+                    !info.name.contains("secure", ignoreCase = true) &&
+                        !TifDeviceQuirks.isMtkVideoCodec(info.name)
+                }
             }
         }
     }

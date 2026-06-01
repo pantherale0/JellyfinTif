@@ -19,9 +19,11 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import com.github.pantherale0.jellyfintif.services.livetv.LiveTvStream
 import com.github.pantherale0.jellyfintif.data.SessionRepository
 import com.github.pantherale0.jellyfintif.services.TifPlayerFactory
+import com.github.pantherale0.jellyfintif.services.tif.TifDeviceQuirks
 import org.jellyfin.sdk.model.serializer.toUUIDOrNull
 import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import com.github.pantherale0.jellyfintif.util.launchIO
@@ -268,7 +270,7 @@ class JellyfinTvSession(
         attachVideoSurface(
             player,
             force = true,
-            allowBeforeReady = player != null,
+            allowBeforeReady = player != null && !TifDeviceQuirks.deferSurfaceAttachUntilDecoderReady,
         )
         if (firstFrameRendered && player?.playbackState == Player.STATE_READY) {
             markVideoAvailable()
@@ -286,7 +288,11 @@ class JellyfinTvSession(
         }
         if (player != null) {
             attachedSurface = null
-            attachVideoSurface(player, force = true, allowBeforeReady = true)
+            attachVideoSurface(
+                player,
+                force = true,
+                allowBeforeReady = !TifDeviceQuirks.deferSurfaceAttachUntilDecoderReady,
+            )
         }
     }
 
@@ -316,12 +322,30 @@ class JellyfinTvSession(
         val surface = pendingSurface ?: return
         if (!surface.isValid) return
         val playbackState = exoPlayer?.playbackState ?: Player.STATE_IDLE
+        val deferForSony = TifDeviceQuirks.deferSurfaceAttachUntilDecoderReady
+        if (deferForSony && !allowBeforeReady) {
+            return
+        }
         if (!allowBeforeReady && playbackState != Player.STATE_READY) return
         if (!force && attachedSurface === surface) return
         attachedSurface = surface
         exoPlayer?.setVideoSurface(surface)
     }
 
+
+
+    private fun createDecoderAnalyticsListener(exoPlayer: ExoPlayer): AnalyticsListener =
+        object : AnalyticsListener {
+            override fun onVideoDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long,
+            ) {
+                ConnectionLog.playback("video decoder initialized: $decoderName")
+                attachVideoSurface(exoPlayer, force = true, allowBeforeReady = true)
+            }
+        }
 
     private fun createPlaybackListener(): Player.Listener =
         object : Player.Listener {
@@ -341,7 +365,7 @@ class JellyfinTvSession(
                 when (playbackState) {
                     Player.STATE_BUFFERING -> notifyPlaybackLoading()
                     Player.STATE_READY -> {
-                        attachVideoSurface(player, force = true)
+                        attachVideoSurface(player, force = true, allowBeforeReady = true)
                         maybeMarkVideoAvailable()
                     }
                     Player.STATE_ENDED -> {
@@ -384,9 +408,12 @@ class JellyfinTvSession(
         val exoPlayer =
             player ?: playerFactory.createTvInputPlayer(forceSoftwareVideoDecoders).also { created ->
                 created.addListener(createPlaybackListener())
+                created.addAnalyticsListener(createDecoderAnalyticsListener(created))
                 player = created
             }
-        attachVideoSurface(exoPlayer, force = true, allowBeforeReady = true)
+        if (!TifDeviceQuirks.deferSurfaceAttachUntilDecoderReady) {
+            attachVideoSurface(exoPlayer, force = true, allowBeforeReady = true)
+        }
         exoPlayer.setMediaItem(buildMediaItem(stream))
         playbackAnchorUtcMs = System.currentTimeMillis()
         exoPlayer.prepare()
