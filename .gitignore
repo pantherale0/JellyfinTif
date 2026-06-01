@@ -18,3 +18,4 @@ gen/
 out/
 app/build/
 .kotlin/
+app/ci.keystore

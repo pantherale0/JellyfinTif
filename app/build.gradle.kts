@@ -1,5 +1,8 @@
 import com.android.build.api.dsl.ApplicationExtension
+import com.android.build.api.variant.FilterConfiguration
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Base64
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -9,7 +12,26 @@ plugins {
     alias(libs.plugins.kotlin.plugin.serialization)
 }
 
+val isCI = System.getenv("CI")?.toBoolean() == true
+val shouldSign = isCI && System.getenv("KEY_ALIAS") != null
 val ffmpegModuleExists = project.file("libs/lib-decoder-ffmpeg-release.aar").exists()
+
+val gitTags =
+    providers
+        .exec {
+            commandLine("git", "tag", "--list", "v*")
+            isIgnoreExitValue = true
+        }.standardOutput.asText
+        .getOrElse("")
+
+val gitDescribe =
+    providers
+        .exec {
+            commandLine("git", "describe", "--tags", "--long", "--match=v*")
+            isIgnoreExitValue = true
+        }.standardOutput.asText
+        .map { it.trim().ifBlank { "v0.0.0" } }
+        .getOrElse("v0.0.0")
 
 kotlin {
     compilerOptions {
@@ -25,9 +47,29 @@ configure<ApplicationExtension> {
         applicationId = "com.github.pantherale0.jellyfintif"
         minSdk = 23
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = gitTags.trim().lines().filter { it.isNotBlank() }.size.coerceAtLeast(1)
+        versionName = gitDescribe.trim().removePrefix("v").ifBlank { "0.0.0" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("long", "BUILD_TIME", "${System.currentTimeMillis()}L")
+    }
+
+    signingConfigs {
+        if (shouldSign) {
+            create("ci") {
+                file("ci.keystore").writeBytes(
+                    Base64.getDecoder().decode(System.getenv("SIGNING_KEY")),
+                )
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+                storePassword = System.getenv("KEY_STORE_PASSWORD")
+                storeFile = file("ci.keystore")
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
     }
 
     buildTypes {
@@ -38,6 +80,20 @@ configure<ApplicationExtension> {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            isDebuggable = false
+            if (shouldSign) {
+                signingConfig = signingConfigs.getByName("ci")
+            } else {
+                val localPropertiesFile = project.rootProject.file("local.properties")
+                if (localPropertiesFile.exists()) {
+                    val properties = Properties()
+                    properties.load(localPropertiesFile.inputStream())
+                    val signingConfigName = properties["release.signing.config"]?.toString()
+                    if (signingConfigName != null) {
+                        signingConfig = signingConfigs.getByName(signingConfigName)
+                    }
+                }
+            }
         }
         debug {
             isMinifyEnabled = false
@@ -60,6 +116,21 @@ configure<ApplicationExtension> {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.outputs
+            .map { it as com.android.build.api.variant.impl.VariantOutputImpl }
+            .forEach { output ->
+                val abi =
+                    output
+                        .getFilter(FilterConfiguration.FilterType.ABI)
+                        .let { if (it != null) "-${it.identifier}" else "" }
+                output.outputFileName =
+                    "JellyfinTif-${variant.buildType}-${output.versionName.get()}-${output.versionCode.get()}$abi.apk"
+            }
     }
 }
 

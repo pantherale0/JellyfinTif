@@ -1,0 +1,98 @@
+name: Develop release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: develop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m"
+  TAG_NAME: develop
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Resolve version
+        run: |
+          LATEST_TAG=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo "v0.0.0")
+          VERSION_NAME=$(git describe --tags --match 'v*' --long 2>/dev/null || echo "v0.0.0-0-g$(git rev-parse --short HEAD)")
+          echo "LATEST_TAG=$LATEST_TAG" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        env:
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Verify APK signatures
+        run: |
+          find app/build/outputs/apk -name '*.apk' -print0 |
+            xargs -0 -n1 "$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS_VERSION/apksigner" verify --verbose --print-certs
+
+      - name: Checksums
+        run: |
+          echo "SHA256 checksums:"
+          find app/build/outputs/apk -name '*.apk' -print0 | xargs -0 sha256sum
+
+      - name: Upload mapping
+        uses: actions/upload-artifact@v7
+        with:
+          name: mapping-develop
+          path: app/build/outputs/**/mapping.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Publish develop pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s globstar nullglob
+          apks=(app/build/outputs/apk/**/*.apk)
+          if [ ${#apks[@]} -eq 0 ]; then
+            echo "No APKs found"
+            exit 1
+          fi
+
+          gh release delete "$TAG_NAME" --cleanup-tag -y 2>/dev/null || true
+
+          {
+            echo "### \`main\` development build"
+            echo
+            echo "Pre-release APK built from the latest commit on \`main\`."
+            echo
+            echo "**Version:** \`${VERSION_NAME}\`"
+            echo
+            echo "For stable releases see [Releases](https://github.com/${{ github.repository }}/releases/latest)."
+            echo
+            echo "[Changes since \`${LATEST_TAG}\`](https://github.com/${{ github.repository }}/compare/${LATEST_TAG}...main)"
+          } > ci_release_note.txt
+
+          gh release create "$TAG_NAME" \
+            --latest=false \
+            --prerelease \
+            --title "${{ env.VERSION_NAME }}" \
+            --target "${{ github.sha }}" \
+            -F ci_release_note.txt \
+            "${apks[@]}"
