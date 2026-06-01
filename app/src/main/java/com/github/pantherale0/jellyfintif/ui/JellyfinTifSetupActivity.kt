@@ -4,6 +4,7 @@ import android.app.Activity
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text as M3Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -23,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -31,7 +36,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.tv.material3.Text
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -46,6 +50,12 @@ import com.github.pantherale0.jellyfintif.ui.theme.JellyfinTifTheme
 import dagger.hilt.android.AndroidEntryPoint
 import java.util.UUID
 import javax.inject.Inject
+
+private val JellyfinBlue = Color(0xFF00A4DC)
+private val TextPrimary = Color.White
+private val TextSecondary = Color(0xFFBDBDBD)
+private val FieldBackground = Color(0xFF2A2A2A)
+private val FieldBorder = Color(0xFF888888)
 
 @AndroidEntryPoint
 class JellyfinTifSetupActivity : ComponentActivity() {
@@ -122,7 +132,10 @@ private fun TifSetupScreen(
     }
 
     Box(
-        modifier = Modifier.fillMaxSize(),
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center,
     ) {
         when {
@@ -161,6 +174,20 @@ private fun TifSetupScreen(
 @Composable
 private fun ServerUrlContent(onConnect: (String) -> Unit) {
     var serverUrl by remember { mutableStateOf("") }
+    val fieldColors =
+        OutlinedTextFieldDefaults.colors(
+            focusedTextColor = TextPrimary,
+            unfocusedTextColor = TextPrimary,
+            disabledTextColor = TextSecondary,
+            cursorColor = JellyfinBlue,
+            focusedBorderColor = JellyfinBlue,
+            unfocusedBorderColor = FieldBorder,
+            focusedLabelColor = JellyfinBlue,
+            unfocusedLabelColor = TextSecondary,
+            focusedContainerColor = FieldBackground,
+            unfocusedContainerColor = FieldBackground,
+        )
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(24.dp),
@@ -169,18 +196,26 @@ private fun ServerUrlContent(onConnect: (String) -> Unit) {
         Text(
             text = stringResource(R.string.tif_setup_title),
             style = MaterialTheme.typography.headlineMedium,
+            color = TextPrimary,
             textAlign = TextAlign.Center,
         )
         Text(
             text = stringResource(R.string.tif_setup_enter_server),
             style = MaterialTheme.typography.bodyLarge,
+            color = TextSecondary,
             textAlign = TextAlign.Center,
         )
         OutlinedTextField(
             value = serverUrl,
             onValueChange = { serverUrl = it },
-            label = { Text(stringResource(R.string.tif_setup_server_url_hint)) },
+            label = {
+                M3Text(
+                    text = stringResource(R.string.tif_setup_server_url_hint),
+                    color = TextSecondary,
+                )
+            },
             modifier = Modifier.fillMaxWidth(0.6f),
+            colors = fieldColors,
             keyboardOptions =
                 KeyboardOptions(
                     keyboardType = KeyboardType.Uri,
@@ -213,18 +248,20 @@ private fun QuickConnectContent(
         Text(
             text = stringResource(R.string.tif_setup_quick_connect_title),
             style = MaterialTheme.typography.headlineMedium,
+            color = TextPrimary,
             textAlign = TextAlign.Center,
         )
         Text(
             text = stringResource(R.string.tif_setup_quick_connect_instructions),
             style = MaterialTheme.typography.bodyLarge,
+            color = TextSecondary,
             textAlign = TextAlign.Center,
         )
         Text(
             text = code,
             style = MaterialTheme.typography.displayMedium,
             textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.primary,
+            color = JellyfinBlue,
         )
         LoadingIndicator()
         Button(onClick = onCancel) {
@@ -244,18 +281,20 @@ private fun SyncingContent() {
         Text(
             text = stringResource(R.string.tif_setup_syncing),
             style = MaterialTheme.typography.headlineMedium,
+            color = TextPrimary,
             textAlign = TextAlign.Center,
         )
         Text(
             text = stringResource(R.string.tif_setup_explanation),
             style = MaterialTheme.typography.bodyLarge,
+            color = TextSecondary,
             textAlign = TextAlign.Center,
         )
         Text(
             text = stringResource(R.string.tif_setup_warning),
             style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary,
             textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -273,6 +312,7 @@ private fun ErrorContent(
         Text(
             text = message,
             style = MaterialTheme.typography.bodyLarge,
+            color = TextPrimary,
             textAlign = TextAlign.Center,
         )
         Spacer(modifier = Modifier.height(8.dp))
