@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Jellyfin Live TV</string>
+    <string name="tif_input_label">Jellyfin Live TV</string>
+    <string name="tif_setup_title">Set up Jellyfin Live TV</string>
+    <string name="tif_setup_enter_server">Enter your Jellyfin server URL to connect via Quick Connect.</string>
+    <string name="tif_setup_server_url_hint">Server URL (e.g. http://192.168.1.10:8096)</string>
+    <string name="tif_setup_connect">Connect</string>
+    <string name="tif_setup_cancel">Cancel</string>
+    <string name="tif_setup_try_again">Try again</string>
+    <string name="tif_setup_quick_connect_title">Quick Connect</string>
+    <string name="tif_setup_quick_connect_instructions">Enter this code in Jellyfin Dashboard → Quick Connect, then wait for authorization.</string>
+    <string name="tif_setup_syncing">Syncing channels and TV guide…</string>
+    <string name="tif_setup_sync_failed">Could not sync Live TV data. Check your connection and try again.</string>
+    <string name="tif_setup_explanation">Jellyfin Live TV will synchronize your channels and program guide data directly into Android TV.</string>
+    <string name="tif_setup_warning">This process will download channel logos and parse program data for the next 48 hours. Depending on your channel count, this might take a minute or two.</string>
+</resources>
