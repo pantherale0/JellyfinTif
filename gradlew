@@ -114,7 +114,94 @@ case "$( uname )" in                #(
   NONSTOP* )        nonstop=true ;;
 esac
 
+# IDE extensions (Cursor/VS Code) may set JAVA_HOME to an embedded JRE without jlink.
+# Android Gradle Plugin requires a full system JDK. Never use IDE-bundled runtimes.
+is_usable_jdk() {
+    [ -n "$1" ] && [ -x "$1/bin/java" ] && [ -x "$1/bin/jlink" ]
+}
 
+is_ide_bundled_java() {
+    case "$1" in
+        *"/.cursor/"*|*"/.vscode/"*|*"/extensions/"*|*"/.jetbrains/"*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+resolve_symlink() {
+    _target=$1
+    while [ -L "$_target" ]; do
+        _dir=$(dirname "$_target")
+        _link=$(ls -ld "$_target" | sed 's/.* -> //')
+        case $_link in
+            /*) _target=$_link ;;
+            *) _target=$_dir/$_link ;;
+        esac
+    done
+    printf '%s' "$_target"
+}
+
+resolve_java_home() {
+    if is_usable_jdk "$JAVA_HOME" && ! is_ide_bundled_java "$JAVA_HOME"; then
+        return 0
+    fi
+
+    if is_ide_bundled_java "$JAVA_HOME"; then
+        warn "Ignoring IDE-bundled JAVA_HOME: $JAVA_HOME"
+    elif [ -n "$JAVA_HOME" ]; then
+        warn "Ignoring JAVA_HOME (not a full JDK): $JAVA_HOME"
+    fi
+
+    if [ -n "${JELLYFINTIF_JAVA_HOME:-}" ] && is_usable_jdk "$JELLYFINTIF_JAVA_HOME"; then
+        JAVA_HOME=$JELLYFINTIF_JAVA_HOME
+        export JAVA_HOME
+        return 0
+    fi
+
+    if command -v java >/dev/null 2>&1; then
+        _java=$(resolve_symlink "$(command -v java)")
+        _candidate=$(dirname "$(dirname "$_java")")
+        if is_usable_jdk "$_candidate" && ! is_ide_bundled_java "$_candidate"; then
+            JAVA_HOME=$_candidate
+            export JAVA_HOME
+            return 0
+        fi
+    fi
+
+    if "$darwin"; then
+        for _ver in 21 17 11; do
+            _candidate=$(/usr/libexec/java_home -v "$_ver" 2>/dev/null || true)
+            if is_usable_jdk "$_candidate" && ! is_ide_bundled_java "$_candidate"; then
+                JAVA_HOME=$_candidate
+                export JAVA_HOME
+                return 0
+            fi
+        done
+    fi
+
+    for _candidate in \
+        /usr/lib/jvm/java-21-openjdk \
+        /usr/lib/jvm/java-21-openjdk-amd64 \
+        /usr/lib/jvm/java-17-openjdk \
+        /usr/lib/jvm/java-17-openjdk-amd64 \
+        /usr/lib/jvm/default \
+        /usr/lib/jvm/default-java
+    do
+        if is_usable_jdk "$_candidate"; then
+            JAVA_HOME=$_candidate
+            export JAVA_HOME
+            return 0
+        fi
+    done
+
+    die "ERROR: A full system JDK (with jlink) is required.
+
+Install OpenJDK 17+ (e.g. jdk-openjdk on Arch), ensure 'java' on PATH points to it,
+or set JELLYFINTIF_JAVA_HOME to your JDK installation."
+}
+
+resolve_java_home
 
 # Determine the Java command to use to start the JVM.
 if [ -n "$JAVA_HOME" ] ; then
@@ -201,6 +288,11 @@ fi
 
 # Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+
+# Propagate resolved JDK to Gradle (overrides IDE-injected JAVA_HOME in child processes).
+if [ -n "$JAVA_HOME" ]; then
+    GRADLE_OPTS="${GRADLE_OPTS} -Dorg.gradle.java.home=${JAVA_HOME}"
+fi
 
 # Collect all arguments for the java command:
 #   * DEFAULT_JVM_OPTS, JAVA_OPTS, and optsEnvironmentVar are not allowed to contain shell fragments,

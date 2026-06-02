@@ -18,6 +18,14 @@ Android TV Input Framework (TIF) provider for Jellyfin Live TV. Adds Jellyfin ch
 
 ## Building locally
 
+Requires a **full system JDK** (17+; CI uses 21). Cursor/VS Code must not supply the build JDK — `gradlew` ignores IDE-bundled `JAVA_HOME` and pins the Gradle daemon via `gradle/gradle-daemon-jvm.properties`.
+
+Optional: point the Java extension at your JDK before opening the project:
+
+```bash
+export JELLYFINTIF_JAVA_HOME=/usr/lib/jvm/java-17-openjdk   # adjust for your OS
+```
+
 ```bash
 ./gradlew assembleDebug
 ```
