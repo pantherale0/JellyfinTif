@@ -15,6 +15,7 @@ import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import com.github.pantherale0.jellyfintif.di.AuthOkHttpClient
 import com.github.pantherale0.jellyfintif.services.tif.TifDeviceQuirks
+import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.OkHttpClient
 import javax.inject.Inject
@@ -48,9 +49,13 @@ class TifPlayerFactory
                 } else {
                     TV_INPUT_HARDWARE_CODEC_SELECTOR
                 }
+            val enableDecoderFallback = !forceSoftwareVideoDecoders
+            ConnectionLog.playback(
+                "createTvInputPlayer: softwareOnly=$forceSoftwareVideoDecoders decoderFallback=$enableDecoderFallback",
+            )
             val renderersFactory =
                 TifRenderersFactory(context)
-                    .setEnableDecoderFallback(true)
+                    .setEnableDecoderFallback(enableDecoderFallback)
                     .setExtensionRendererMode(extensionMode)
                     .setMediaCodecSelector(codecSelector)
             val mediaSourceFactory =
@@ -130,7 +135,9 @@ class TifPlayerFactory
                         )
                     infos
                         .filter { info ->
-                            !info.name.contains("secure", ignoreCase = true)
+                            !info.name.contains("secure", ignoreCase = true) &&
+                                !TifDeviceQuirks.isMtkVideoCodec(info.name) &&
+                                !info.name.contains("amlogic", ignoreCase = true)
                         }.sortedWith(
                             compareBy<MediaCodecInfo> { info ->
                                 when {
@@ -161,23 +168,29 @@ class TifPlayerFactory
                 }
 
             private fun selectSoftwareVideoDecoders(infos: List<MediaCodecInfo>): List<MediaCodecInfo> {
+                val tifSafe =
+                    infos.filter { info ->
+                        !info.name.contains("secure", ignoreCase = true) &&
+                            !TifDeviceQuirks.isMtkVideoCodec(info.name) &&
+                            !info.name.contains("amlogic", ignoreCase = true)
+                    }
                 val preferred =
                     TIF_PREFERRED_SOFTWARE_VIDEO_DECODERS.mapNotNull { name ->
-                        infos.find { it.name == name }
+                        tifSafe.find { it.name == name }
                     }
                 if (preferred.isNotEmpty()) {
                     return preferred
                 }
                 val software =
-                    infos.filter { info ->
+                    tifSafe.filter { info ->
                         info.softwareOnly || !info.hardwareAccelerated
                     }
                 if (software.isNotEmpty()) {
                     return software
                 }
-                return infos.filter { info ->
-                    !info.name.contains("secure", ignoreCase = true) &&
-                        !TifDeviceQuirks.isMtkVideoCodec(info.name)
+                return tifSafe.filter { info ->
+                    info.name.startsWith("OMX.google.", ignoreCase = true) ||
+                        info.name.startsWith("c2.android.", ignoreCase = true)
                 }
             }
         }

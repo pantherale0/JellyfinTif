@@ -3,6 +3,7 @@ package com.github.pantherale0.jellyfintif.services
 import android.content.Context
 import android.os.Handler
 import androidx.media3.common.Format
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
@@ -36,6 +37,19 @@ internal class TifMediaCodecVideoRenderer(
         .setEventListener(eventListener)
         .setMaxDroppedFramesToNotify(maxDroppedFramesToNotify),
 ) {
+    @Throws(MediaCodecUtil.DecoderQueryException::class)
+    override fun getDecoderInfos(
+        mediaCodecSelector: MediaCodecSelector,
+        format: Format,
+        requiresSecureDecoder: Boolean,
+    ): List<MediaCodecInfo> {
+        val infos = super.getDecoderInfos(mediaCodecSelector, format, requiresSecureDecoder)
+        if (!TifDeviceQuirks.preferSoftwareVideoDecoders) {
+            return infos.filterNot { TifDeviceQuirks.isMtkVideoCodec(it.name) }
+        }
+        return infos.filter { info -> isTifSafeSoftwareDecoder(info.name) }
+    }
+
     override fun codecNeedsSetOutputSurfaceWorkaround(name: String): Boolean =
         super.codecNeedsSetOutputSurfaceWorkaround(name) ||
             TifDeviceQuirks.needsSetOutputSurfaceWorkaround(name)
@@ -90,6 +104,15 @@ internal class TifMediaCodecVideoRenderer(
         }
         return null
     }
+
+    private fun isTifSafeSoftwareDecoder(name: String): Boolean =
+        !TifDeviceQuirks.isMtkVideoCodec(name) &&
+            !name.contains("amlogic", ignoreCase = true) &&
+            (
+                name.startsWith("OMX.google.", ignoreCase = true) ||
+                    name.startsWith("c2.android.", ignoreCase = true) ||
+                    name.contains("google", ignoreCase = true)
+            )
 
     private companion object {
         private const val FRAME_RATE_RECREATE_THRESHOLD_PERCENT = 10f

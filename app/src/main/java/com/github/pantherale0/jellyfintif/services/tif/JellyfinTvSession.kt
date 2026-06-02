@@ -202,7 +202,8 @@ class JellyfinTvSession(
         videoAvailableNotified = false
         firstFrameRendered = false
         playbackRetryCount = 0
-        forceSoftwareVideoDecoders = false
+        forceSoftwareVideoDecoders = TifDeviceQuirks.preferSoftwareVideoDecoders
+        videoDecoderInitialized = false
         cancelVideoAvailableFallback()
         tuneStartedAtMs = System.currentTimeMillis()
         currentLiveStream = null
