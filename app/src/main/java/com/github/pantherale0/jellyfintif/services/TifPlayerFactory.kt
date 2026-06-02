@@ -28,7 +28,9 @@ class TifPlayerFactory
         @param:ApplicationContext private val context: Context,
         @param:AuthOkHttpClient private val authOkHttpClient: OkHttpClient,
     ) {
-        fun createTvInputPlayer(forceSoftwareVideoDecoders: Boolean = false): ExoPlayer {
+        fun createTvInputPlayer(
+            forceSoftwareVideoDecoders: Boolean = TifDeviceQuirks.preferSoftwareVideoDecoders,
+        ): ExoPlayer {
             val extractorsFactory = createTvInputExtractorsFactory()
             val ffmpegAvailable =
                 runCatching {

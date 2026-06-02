@@ -77,8 +77,9 @@ class JellyfinTvSession(
     private var playbackAnchorUtcMs: Long = 0L
     private val seekMutex = Mutex()
     private var playbackRetryCount = 0
-    private var forceSoftwareVideoDecoders = false
-    private var firstFrameWatchdogJob: Job? = null
+    private var forceSoftwareVideoDecoders = TifDeviceQuirks.preferSoftwareVideoDecoders
+    private var videoAvailableFallbackJob: Job? = null
+    private var videoDecoderInitialized = false
 
     init {
         setOverlayViewEnabled(true)
@@ -90,7 +91,7 @@ class JellyfinTvSession(
 
     override fun onRelease() {
         tuneJob?.cancel()
-        cancelFirstFrameWatchdog()
+        cancelVideoAvailableFallback()
         val position = player?.currentPosition?.milliseconds ?: 0.milliseconds
         sessionScope.launchIO {
             reportPlaybackStopped(position)
@@ -202,7 +203,7 @@ class JellyfinTvSession(
         firstFrameRendered = false
         playbackRetryCount = 0
         forceSoftwareVideoDecoders = false
-        cancelFirstFrameWatchdog()
+        cancelVideoAvailableFallback()
         tuneStartedAtMs = System.currentTimeMillis()
         currentLiveStream = null
         timeshiftWindow = null
@@ -270,7 +271,7 @@ class JellyfinTvSession(
         attachVideoSurface(
             player,
             force = true,
-            allowBeforeReady = player != null && !TifDeviceQuirks.deferSurfaceAttachUntilDecoderReady,
+            allowBeforeReady = player != null,
         )
         if (firstFrameRendered && player?.playbackState == Player.STATE_READY) {
             markVideoAvailable()
@@ -291,7 +292,7 @@ class JellyfinTvSession(
             attachVideoSurface(
                 player,
                 force = true,
-                allowBeforeReady = !TifDeviceQuirks.deferSurfaceAttachUntilDecoderReady,
+                allowBeforeReady = true,
             )
         }
     }
@@ -322,14 +323,11 @@ class JellyfinTvSession(
         val surface = pendingSurface ?: return
         if (!surface.isValid) return
         val playbackState = exoPlayer?.playbackState ?: Player.STATE_IDLE
-        val deferForSony = TifDeviceQuirks.deferSurfaceAttachUntilDecoderReady
-        if (deferForSony && !allowBeforeReady) {
-            return
-        }
         if (!allowBeforeReady && playbackState != Player.STATE_READY) return
         if (!force && attachedSurface === surface) return
         attachedSurface = surface
         exoPlayer?.setVideoSurface(surface)
+        ConnectionLog.playback("attachVideoSurface: valid surface attached (state=$playbackState)")
     }
 
 
@@ -343,7 +341,18 @@ class JellyfinTvSession(
                 initializationDurationMs: Long,
             ) {
                 ConnectionLog.playback("video decoder initialized: $decoderName")
+                videoDecoderInitialized = true
                 attachVideoSurface(exoPlayer, force = true, allowBeforeReady = true)
+                scheduleVideoAvailableFallback()
+            }
+
+            override fun onRenderedFirstFrame(
+                eventTime: AnalyticsListener.EventTime,
+                output: Any,
+                renderTimeMs: Long,
+            ) {
+                ConnectionLog.playback("analytics onRenderedFirstFrame")
+                onFirstFrameReady()
             }
         }
 
@@ -380,15 +389,8 @@ class JellyfinTvSession(
             }
 
             override fun onRenderedFirstFrame() {
-                if (firstFrameRendered) return
-                firstFrameRendered = true
-                cancelFirstFrameWatchdog()
-                attachVideoSurface(
-                    player,
-                    force = true,
-                    allowBeforeReady = true,
-                )
-                maybeMarkVideoAvailable()
+                ConnectionLog.playback("player onRenderedFirstFrame")
+                onFirstFrameReady()
             }
         }
 
@@ -411,14 +413,12 @@ class JellyfinTvSession(
                 created.addAnalyticsListener(createDecoderAnalyticsListener(created))
                 player = created
             }
-        if (!TifDeviceQuirks.deferSurfaceAttachUntilDecoderReady) {
-            attachVideoSurface(exoPlayer, force = true, allowBeforeReady = true)
-        }
+        attachVideoSurface(exoPlayer, force = true, allowBeforeReady = true)
         exoPlayer.setMediaItem(buildMediaItem(stream))
         playbackAnchorUtcMs = System.currentTimeMillis()
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
-        startFirstFrameWatchdog()
+        scheduleVideoAvailableFallback()
         notifyTimeShiftStatusChanged(
             if (timeshiftWindow?.isAvailable == true) {
                 TvInputManager.TIME_SHIFT_STATUS_AVAILABLE
@@ -460,6 +460,7 @@ class JellyfinTvSession(
                 withContext(Dispatchers.Main) {
                     firstFrameRendered = false
                     videoAvailableNotified = false
+                    videoDecoderInitialized = false
                     startChannelPlayback(channelId, stream, reportStart = false)
                 }
             }
@@ -485,7 +486,7 @@ class JellyfinTvSession(
 
     private companion object {
         private const val MAX_PLAYBACK_RETRIES = 2
-        private const val FIRST_FRAME_TIMEOUT_MS = 8_000L
+        private const val VIDEO_AVAILABLE_FALLBACK_MS = 5_000L
     }
 
     private fun showBufferingOverlay() {
@@ -528,51 +529,53 @@ class JellyfinTvSession(
         }
     }
 
-    private fun startFirstFrameWatchdog() {
-        cancelFirstFrameWatchdog()
-        firstFrameWatchdogJob =
+    private fun onFirstFrameReady() {
+        if (firstFrameRendered) return
+        firstFrameRendered = true
+        cancelVideoAvailableFallback()
+        attachVideoSurface(player, force = true, allowBeforeReady = true)
+        maybeMarkVideoAvailable()
+    }
+
+    private fun scheduleVideoAvailableFallback() {
+        cancelVideoAvailableFallback()
+        videoAvailableFallbackJob =
             sessionScope.launch {
-                delay(FIRST_FRAME_TIMEOUT_MS)
-                if (firstFrameRendered || videoAvailableNotified) return@launch
-                if (forceSoftwareVideoDecoders) return@launch
-                ConnectionLog.playback(
-                    "no first frame within ${FIRST_FRAME_TIMEOUT_MS}ms, falling back to software decoder",
-                )
-                forceSoftwareVideoDecoders = true
-                fallbackToSoftwareDecoder()
+                delay(VIDEO_AVAILABLE_FALLBACK_MS)
+                maybeMarkVideoAvailable(force = true)
             }
     }
 
-    private fun cancelFirstFrameWatchdog() {
-        firstFrameWatchdogJob?.cancel()
-        firstFrameWatchdogJob = null
+    private fun cancelVideoAvailableFallback() {
+        videoAvailableFallbackJob?.cancel()
+        videoAvailableFallbackJob = null
     }
 
-    private fun fallbackToSoftwareDecoder() {
-        val channelId = currentChannelId ?: return
-        val stream = currentLiveStream ?: return
-        player?.release()
-        player = null
-        attachedSurface = null
-        firstFrameRendered = false
-        videoAvailableNotified = false
-        notifyInitialLoad()
-        startChannelPlayback(channelId, stream, reportStart = false)
-    }
-
-    private fun maybeMarkVideoAvailable() {
+    private fun maybeMarkVideoAvailable(force: Boolean = false) {
         if (videoAvailableNotified) return
         if (pendingSurface?.isValid != true) return
         val exoPlayer = player ?: return
-        if (!firstFrameRendered) return
-        if (exoPlayer.playbackState != Player.STATE_READY) return
-        if (exoPlayer.isLoading) return
+        if (!force && exoPlayer.playbackState != Player.STATE_READY) return
+        if (force &&
+            exoPlayer.playbackState != Player.STATE_READY &&
+            exoPlayer.playbackState != Player.STATE_BUFFERING
+        ) {
+            return
+        }
+        val hasVideoOutput =
+            firstFrameRendered ||
+                exoPlayer.videoSize.width > 0 ||
+                exoPlayer.currentPosition > 500L ||
+                (force && videoDecoderInitialized)
+        if (!hasVideoOutput) return
         markVideoAvailable()
     }
 
     private fun markVideoAvailable() {
         if (videoAvailableNotified) return
         if (pendingSurface?.isValid != true) return
+        ConnectionLog.playback("markVideoAvailable: notifying host")
+        cancelVideoAvailableFallback()
         hideBufferingOverlay()
         publishContentAllowed(currentChannelUri)
         player?.currentTracks?.let { publishTifTrackInfo(it) }
