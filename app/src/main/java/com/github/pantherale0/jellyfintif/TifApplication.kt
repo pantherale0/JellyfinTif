@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.github.pantherale0.jellyfintif.data.SessionRepository
+import com.github.pantherale0.jellyfintif.services.tif.EpgSyncScheduler
 import com.github.pantherale0.jellyfintif.util.ConnectionLog
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -23,6 +24,9 @@ class TifApplication :
 
     @Inject
     lateinit var sessionRepository: SessionRepository
+
+    @Inject
+    lateinit var epgSyncScheduler: EpgSyncScheduler
 
     override fun onCreate() {
         super.onCreate()
@@ -51,6 +55,10 @@ class TifApplication :
             ConnectionLog.session("application startup: attempting session restore")
             val restored = sessionRepository.restoreSession()
             ConnectionLog.session("application startup: session restore success=$restored")
+            if (restored) {
+                val scheduled = epgSyncScheduler.ensurePeriodicSyncScheduled()
+                ConnectionLog.sync("application startup: periodic EPG sync scheduled=$scheduled")
+            }
         }
     }
 
