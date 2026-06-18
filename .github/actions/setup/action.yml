@@ -1,0 +1,23 @@
+name: Setup
+description: Set up JDK and Android SDK for JellyfinTif builds
+
+runs:
+  using: composite
+  steps:
+    - name: Set up JDK
+      uses: actions/setup-java@v5
+      with:
+        distribution: zulu
+        java-version: "21"
+        cache: gradle
+
+    - name: Set SDK versions
+      shell: bash
+      run: |
+        echo "BUILD_TOOLS_VERSION=36.0.0" >> "$GITHUB_ENV"
+        echo "COMPILE_SDK_VERSION=36" >> "$GITHUB_ENV"
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v4
+      with:
+        packages: tools platform-tools platforms;android-36 build-tools;${{ env.BUILD_TOOLS_VERSION }}
