@@ -6,6 +6,7 @@ import android.os.Build
 import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
@@ -44,7 +45,13 @@ class EpgSyncScheduler
                     .setInputData(syncContext.inputData)
                     .setConstraints(syncConstraints)
                     .build()
-            workManager.enqueue(request)
+            // Unique work prevents stacked one-shots (boot + setup) from running concurrent syncs
+            // that each hold a full EPG payload in memory on low-RAM TVs.
+            workManager.enqueueUniqueWork(
+                EpgSyncWorker.ONE_SHOT_WORK_NAME,
+                ExistingWorkPolicy.KEEP,
+                request,
+            )
             ensurePeriodicSyncScheduled(syncContext)
             ConnectionLog.sync(
                 "enqueueSync scheduled workId=${request.id} userId=${syncContext.userId} serverId=${syncContext.serverId}",
@@ -101,7 +108,7 @@ class EpgSyncScheduler
                     .build()
             workManager.enqueueUniquePeriodicWork(
                 EpgSyncWorker.WORK_NAME,
-                ExistingPeriodicWorkPolicy.UPDATE,
+                ExistingPeriodicWorkPolicy.KEEP,
                 request,
             )
             ConnectionLog.sync(

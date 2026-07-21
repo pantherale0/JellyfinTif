@@ -16,12 +16,17 @@ class ImageUrlService
         fun getItemImageUrl(
             itemId: UUID,
             imageType: ImageType,
+            maxWidth: Int? = null,
+            maxHeight: Int? = null,
+            quality: Int = 90,
         ): String? {
             if (api.baseUrl.isNullOrBlank()) return null
             return api.imageApi.getItemImageUrl(
                 itemId = itemId,
                 imageType = imageType,
-                quality = 96,
+                maxWidth = maxWidth,
+                maxHeight = maxHeight,
+                quality = quality,
             )
         }
     }

@@ -5,6 +5,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences
@@ -68,6 +69,7 @@ class TifPlayerFactory
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setRenderersFactory(renderersFactory)
                 .setTrackSelector(createTvInputTrackSelector())
+                .setLoadControl(createTvInputLoadControl(forceSoftwareVideoDecoders))
                 .build()
                 .also {
                     it.setAudioAttributes(
@@ -79,6 +81,22 @@ class TifPlayerFactory
                     )
                     it.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
                 }
+        }
+
+        /**
+         * Live TIF does not need long forward buffers. Software decode already uses significant
+         * RAM for decoded frames; capping the media buffer reduces LMK risk during EPG sync.
+         */
+        private fun createTvInputLoadControl(forceSoftwareVideoDecoders: Boolean): DefaultLoadControl {
+            val maxBufferMs = if (forceSoftwareVideoDecoders) 15_000 else 30_000
+            return DefaultLoadControl
+                .Builder()
+                .setBufferDurationsMs(
+                    /* minBufferMs= */ 5_000,
+                    /* maxBufferMs= */ maxBufferMs,
+                    /* bufferForPlaybackMs= */ 1_500,
+                    /* bufferForPlaybackAfterRebufferMs= */ 3_000,
+                ).build()
         }
 
         private fun createTvInputExtractorsFactory() =
