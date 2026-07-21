@@ -93,14 +93,25 @@ class JellyfinTvSession(
         tuneJob?.cancel()
         cancelVideoAvailableFallback()
         val position = player?.currentPosition?.milliseconds ?: 0.milliseconds
-        sessionScope.launchIO {
-            reportPlaybackStopped(position)
-        }
+        val channelIdForStop = currentChannelId
         notifyTimeShiftStatusChanged(TvInputManager.TIME_SHIFT_STATUS_UNAVAILABLE)
         currentLiveStream = null
         timeshiftWindow = null
-        player?.release()
+        bufferingOverlay = null
+        pendingSurface = null
+        attachedSurface = null
+        val exoPlayer = player
         player = null
+        // Safe on session teardown (Sony workaround only applies while the host still owns playback).
+        exoPlayer?.clearVideoSurface()
+        exoPlayer?.release()
+        currentChannelId = null
+        // Report stop on a scope that outlives sessionScope.cancel().
+        if (channelIdForStop != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                reportPlaybackStopped(channelIdForStop, position)
+            }
+        }
         sessionScope.cancel()
     }
 
@@ -745,8 +756,10 @@ class JellyfinTvSession(
         }.onFailure { Timber.w(it, "TIF reportPlaybackStart failed") }
     }
 
-    private suspend fun reportPlaybackStopped(position: kotlin.time.Duration) {
-        val channelId = currentChannelId ?: return
+    private suspend fun reportPlaybackStopped(
+        channelId: UUID,
+        position: kotlin.time.Duration,
+    ) {
         if (api.accessToken.isNullOrBlank()) return
         runCatching {
             api.playStateApi.reportPlaybackStopped(
@@ -757,7 +770,6 @@ class JellyfinTvSession(
                 ),
             )
         }.onFailure { Timber.w(it, "TIF reportPlaybackStopped failed") }
-        currentChannelId = null
     }
 
     private fun resolveChannelId(channelUri: Uri): UUID? =

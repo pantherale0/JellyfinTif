@@ -73,6 +73,7 @@ class EpgSyncWorker
 
         companion object {
             const val WORK_NAME = "com.github.pantherale0.jellyfintif.services.tif.EpgSyncWorker"
+            const val ONE_SHOT_WORK_NAME = "$WORK_NAME.oneshot"
             const val PARAM_USER_ID = "userId"
             const val PARAM_SERVER_ID = "serverId"
         }
