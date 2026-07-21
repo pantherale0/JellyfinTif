@@ -310,7 +310,7 @@ class TifSyncManager
                     val request = Request.Builder().url(imageUrl).build()
                     okHttpClient.newCall(request).execute().use { response ->
                         if (!response.isSuccessful) return@use false
-                        val bytes = response.body?.bytes() ?: return@use false
+                        val bytes = response.body.bytes()
                         val bounds =
                             BitmapFactory.Options().apply {
                                 inJustDecodeBounds = true
